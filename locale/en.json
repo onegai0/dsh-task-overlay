@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task overlay",
+    "description": "Shows a native Windows overlay when a task finishes or when your intervention is needed."
+  }
+}

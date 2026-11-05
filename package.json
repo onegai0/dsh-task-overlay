@@ -1,0 +1,27 @@
+{
+  "name": "@local/dsh-task-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent native Win32 overlay for completed and actionable DeepSeek Harness tasks",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "native/dsh-task-overlay.exe",
+    "native/overlay.cpp"
+  ],
+  "scripts": {
+    "build:native": "g++ -std=c++17 -O2 -Wall -Wextra -municode -mwindows -static -s native/overlay.cpp -o native/dsh-task-overlay.exe -luser32 -lshell32 -ldwmapi -lwinmm",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}
