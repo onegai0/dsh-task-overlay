@@ -8,6 +8,16 @@ import { fileURLToPath } from "node:url";
 const HELPER_PATH = fileURLToPath(new URL("./native/dsh-task-overlay.exe", import.meta.url));
 const STATE_PATH = join(process.env.LOCALAPPDATA ?? process.env.APPDATA ?? process.cwd(), "DeepSeekHarness", "dsh-task-overlay", "state.bin");
 const STATE_VERSION = "DSH-TASK-OVERLAY-1";
+const SOUND_ROOT_DIRECTORY_NAME = "sounds";
+const OVERLAY_KINDS = Object.freeze([
+  "completed",
+  "error",
+  "blocked",
+  "truncated",
+  "interrupted",
+  "approval",
+  "question",
+]);
 const MAX_DETAIL_LENGTH = 800;
 const POLL_INTERVAL_MS = 150;
 
@@ -16,6 +26,15 @@ export const name = "task-overlay";
 
 /** Host services required by the overlay. */
 export const inject = ["agents"];
+
+/** Create one sound directory for every overlay kind. */
+function createSoundDirectories(rootDirectory = dirname(STATE_PATH)) {
+  const soundRoot = join(rootDirectory, SOUND_ROOT_DIRECTORY_NAME);
+  for (const kind of OVERLAY_KINDS) {
+    mkdirSync(join(soundRoot, kind), { recursive: true });
+  }
+  return soundRoot;
+}
 
 /** Compact one-line detail suitable for an overlay body. */
 function compactDetail(value) {
@@ -281,7 +300,12 @@ function createOverlayEventHandler(ctx, publish, now = () => Date.now()) {
  * @param {object} ctx - Cordis Host context.
  */
 export function apply(ctx) {
-  ctx.logger.info(`task-overlay: drop a custom alert sound (.wav, .mp3, .m4a, .wma) in ${dirname(STATE_PATH)}`);
+  try {
+    const soundRoot = createSoundDirectories();
+    ctx.logger.info(`task-overlay: custom alert sounds (.wav, .mp3, .m4a, .wma) belong in ${soundRoot}`);
+  } catch (error) {
+    ctx.logger.warn(`task-overlay: could not create sound directories: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const handler = createOverlayEventHandler(ctx, (payload) => {
     const eventId = randomUUID();
     try {
@@ -298,12 +322,14 @@ export function apply(ctx) {
 
 export {
   HELPER_PATH,
+  OVERLAY_KINDS,
   POLL_INTERVAL_MS,
   STATE_PATH,
   STATE_VERSION,
   assistantText,
   compactDetail,
   createOverlayEventHandler,
+  createSoundDirectories,
   encodeState,
   formatElapsed,
   launchHelper,

@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
+  OVERLAY_KINDS,
   assistantText,
   compactDetail,
   createOverlayEventHandler,
+  createSoundDirectories,
   encodeState,
   formatElapsed,
   parseJsonValue,
@@ -238,6 +243,29 @@ test("attributes a failed subagent to its parent session", () => {
     sessionTitle: "Parent task",
     detail: "subagent boom",
   });
+});
+
+test("creates one sound directory for every overlay kind", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-task-overlay-"));
+  try {
+    const soundRoot = createSoundDirectories(root);
+    assert.deepEqual(OVERLAY_KINDS, [
+      "completed",
+      "error",
+      "blocked",
+      "truncated",
+      "interrupted",
+      "approval",
+      "question",
+    ]);
+    assert.equal(soundRoot, join(root, "sounds"));
+    for (const kind of OVERLAY_KINDS) {
+      assert.equal(existsSync(join(soundRoot, kind)), true);
+    }
+    assert.doesNotThrow(() => createSoundDirectories(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("encodes state as stable NUL-delimited UTF-8 fields", () => {

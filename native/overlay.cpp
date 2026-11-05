@@ -246,9 +246,33 @@ std::wstring findCustomSound(const std::wstring& folder) {
     return found;
 }
 
+/** Resolve the sound kind used for fallback and directory lookup. */
+std::wstring knownSoundKind(const std::wstring& kind) {
+    if (kind == L"completed" || kind == L"error" || kind == L"blocked" ||
+        kind == L"truncated" || kind == L"interrupted" || kind == L"approval" ||
+        kind == L"question") {
+        return kind;
+    }
+    return L"completed";
+}
+
+/** Find the sound for one overlay kind, falling back to completed and then the legacy root. */
+std::wstring findSoundForKind(const std::wstring& folder, const std::wstring& kind) {
+    const std::wstring soundRoot = folder + L"\\sounds";
+    const std::wstring effectiveKind = knownSoundKind(kind);
+    std::wstring sound = findCustomSound(soundRoot + L"\\" + effectiveKind);
+    if (sound.empty() && effectiveKind != L"completed") {
+        sound = findCustomSound(soundRoot + L"\\completed");
+    }
+    if (sound.empty()) {
+        sound = findCustomSound(folder);
+    }
+    return sound;
+}
+
 /** Play the custom sound when one is available, otherwise use the system alert. */
-void playAlertSound(const std::wstring& folder) {
-    const std::wstring sound = findCustomSound(folder);
+void playAlertSound(const std::wstring& folder, const std::wstring& kind) {
+    const std::wstring sound = findSoundForKind(folder, kind);
     if (sound.empty()) {
         MessageBeep(MB_ICONASTERISK);
         return;
@@ -353,7 +377,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 ShowWindow(window, SW_SHOWNOACTIVATE);
                 context->visible = true;
                 context->lastAlertAt = GetTickCount64();
-                playAlertSound(stateFolder(context->statePath));
+                playAlertSound(stateFolder(context->statePath), context->state.kind);
             }
         }
 
@@ -365,7 +389,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (context->visible && !context->dismissed && GetTickCount64() - context->lastAlertAt >= kAlertIntervalMs) {
             context->lastAlertAt = GetTickCount64();
-            playAlertSound(stateFolder(context->statePath));
+            playAlertSound(stateFolder(context->statePath), context->state.kind);
         }
         SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         return 0;

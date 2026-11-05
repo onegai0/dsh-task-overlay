@@ -11,7 +11,7 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 - **Tempo total da tarefa** no card: quanto tempo passou do início do turno até o alerta.
 - **Card compacto**: a altura cresce só quando há texto demais (máximo de 3 linhas e um teto de altura), então ele nunca cobre a tela.
 - **Alerta sonoro**: toca quando o card aparece e **repete a cada 30 segundos** enquanto o card estiver na tela. Para quando você entra no app.
-- **Som customizado**: basta deixar um arquivo de áudio na pasta de dados (veja abaixo).
+- **Som por estado**: cada notificação usa o áudio da sua pasta; estados sem áudio usam o som padrão de tarefa concluída (veja abaixo).
 - **Falha de subagente** aparece no card, atribuída à sessão pai.
 
 ## Requisitos
@@ -55,16 +55,31 @@ Com `link:`, as alterações no `index.js` entram no Host sem reiniciar (o Harne
 | Coisa | Caminho |
 |---|---|
 | Código do plugin | `<perfil>/node_modules/@local/dsh-task-overlay` (cópia instalada pelo GitHub) |
-| Dados em runtime (estado + som) | `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\` |
+| Dados em runtime (estado) | `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\` |
+| Sons por estado | `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\sounds\<estado>\` |
 
 O pacote **não escreve nada dentro da pasta do projeto**: estado e som ficam em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\`, que é a mesma pasta usada pelo app em `%LOCALAPPDATA%\DeepSeekHarness\`.
 
 ## Som customizado
 
-1. Copie um arquivo `.wav`, `.mp3`, `.m4a` ou `.wma` para `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\`.
+O plugin cria uma pasta para cada estado em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\sounds\`. As pastas seguem o `kind` da notificação: `max-tokens` usa `truncated`, e um aborto por hook usa `interrupted`:
+
+| Pasta | Estado |
+|---|---|
+| `completed\` | Tarefa concluída (som padrão) |
+| `error\` | A tarefa falhou |
+| `blocked\` | A tarefa foi bloqueada |
+| `truncated\` | Resposta truncada |
+| `interrupted\` | A tarefa foi interrompida |
+| `approval\` | Aprovação necessária |
+| `question\` | Sua intervenção é necessária |
+
+1. Copie um arquivo `.wav`, `.mp3`, `.m4a` ou `.wma` para a pasta do estado desejado.
 2. Pronto — o próximo alerta toca esse arquivo.
 
-Sem arquivo de áudio na pasta, o alerta usa o bipe padrão do Windows. O helper procura o arquivo a cada alerta, então não precisa reiniciar nada; se houver mais de um arquivo de áudio na pasta, use apenas um.
+O helper procura o arquivo a cada alerta, então não precisa reiniciar nada; se houver mais de um arquivo de áudio na mesma pasta, use apenas um.
+
+Quando a pasta do estado não tem áudio, o helper usa automaticamente o som de `completed`. Se também não houver som nessa pasta, ele procura um áudio legado diretamente em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\` e, por último, usa o bipe padrão do Windows.
 
 O `.wav` é reproduzido direto (Win32 `PlaySound`); `.mp3`/`.m4a`/`.wma` usam o MCI do Windows e dependem dos codecs instalados no sistema.
 
