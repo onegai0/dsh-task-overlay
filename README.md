@@ -25,17 +25,19 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 ### Linha de comando
 
 ```bash
-dsh plugin --profile <seu-perfil> add github:onegai0/dsh-task-overlay
+dsh plugin --profile <seu-perfil> add github:onegai0/dsh-task-overlay#v1.0.0
 ```
 
 Troque `<seu-perfil>` pelo nome do perfil (`desktop`, `web`, `tui`, ...). O perfil é o que guarda os plugins instalados.
+
+O `#v1.0.0` fixa a versão: é o recomendado, porque a instalação fica reprodutível. Sem a tag, o Harness instala a `main` mais recente.
 
 ### Plugin Manager (interface)
 
 Abra **Configurações → Plugins** no Harness, use a ação de instalar bundle e informe a mesma especificação:
 
 ```
-github:onegai0/dsh-task-overlay
+github:onegai0/dsh-task-overlay#v1.0.0
 ```
 
 ### Desenvolvimento local (link)
