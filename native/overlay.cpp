@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <mmsystem.h>
+#include <tlhelp32.h>
 #include <algorithm>
 #include <cwctype>
 #include <string>
@@ -11,9 +12,11 @@ namespace {
 
 constexpr wchar_t kMutexName[] = L"Local\\DeepSeekHarness.TaskOverlay";
 constexpr wchar_t kWindowClass[] = L"DeepSeekHarnessTaskOverlayWindow";
+constexpr wchar_t kDeepSeekHarnessExecutable[] = L"DeepSeek Harness.exe";
 constexpr UINT_PTR kPollTimer = 1;
 constexpr DWORD kPollIntervalMs = 150;
 constexpr ULONGLONG kAlertIntervalMs = 30000;
+constexpr ULONGLONG kLifecycleCheckIntervalMs = 1000;
 constexpr int kCardWidth = 380;
 constexpr int kPaddingX = 22;
 constexpr int kMinHeight = 80;
@@ -41,6 +44,7 @@ struct AppContext {
     bool visible = false;
     UINT dpi = 96;
     ULONGLONG lastAlertAt = 0;
+    ULONGLONG lastLifecycleCheckAt = 0;
 };
 
 std::wstring utf8ToWide(const std::string& text) {
@@ -135,12 +139,7 @@ void positionWindow(AppContext& context) {
     SetWindowPos(context.window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
-bool isDeepSeekHarnessForeground() {
-    const HWND foreground = GetForegroundWindow();
-    if (foreground == nullptr) return false;
-
-    DWORD processId = 0;
-    GetWindowThreadProcessId(foreground, &processId);
+bool isDeepSeekHarnessProcess(DWORD processId) {
     if (processId == 0) return false;
 
     const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
@@ -155,7 +154,43 @@ bool isDeepSeekHarnessForeground() {
     std::wstring executable(path, size);
     const std::size_t slash = executable.find_last_of(L"\\/");
     if (slash != std::wstring::npos) executable.erase(0, slash + 1);
-    return _wcsicmp(executable.c_str(), L"DeepSeek Harness.exe") == 0;
+    return _wcsicmp(executable.c_str(), kDeepSeekHarnessExecutable) == 0;
+}
+
+bool isDeepSeekHarnessForeground() {
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr) return false;
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(foreground, &processId);
+    return isDeepSeekHarnessProcess(processId);
+}
+
+bool hasProcessNamed(const wchar_t* executableName) {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    // A transient enumeration failure must not close a valid overlay.
+    if (snapshot == INVALID_HANDLE_VALUE) return true;
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return true;
+    }
+    BOOL hasProcess = TRUE;
+    while (hasProcess) {
+        if (_wcsicmp(entry.szExeFile, executableName) == 0) {
+            CloseHandle(snapshot);
+            return true;
+        }
+        hasProcess = Process32NextW(snapshot, &entry);
+    }
+    CloseHandle(snapshot);
+    return false;
+}
+
+bool hasDeepSeekHarnessProcess() {
+    return hasProcessNamed(kDeepSeekHarnessExecutable);
 }
 
 void drawText(HDC dc, const std::wstring& text, RECT rect, UINT flags, COLORREF color, HFONT font) {
@@ -364,6 +399,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     }
     case WM_TIMER: {
+        const ULONGLONG now = GetTickCount64();
+        if (now - context->lastLifecycleCheckAt >= kLifecycleCheckIntervalMs) {
+            context->lastLifecycleCheckAt = now;
+            if (!hasDeepSeekHarnessProcess()) {
+                DestroyWindow(window);
+                return 0;
+            }
+        }
+
         OverlayState next;
         if (readState(context->statePath, next)) {
             if (next.eventId != context->currentEventId) {
@@ -391,7 +435,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             context->lastAlertAt = GetTickCount64();
             playAlertSound(stateFolder(context->statePath), context->state.kind);
         }
-        SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         return 0;
     }
     case WM_NCHITTEST:
@@ -415,6 +458,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     AppContext context;
     context.instance = instance;
+    context.lastLifecycleCheckAt = GetTickCount64();
     for (int index = 1; index < argumentCount; ++index) {
         const std::wstring option = arguments[index];
         if (option == L"--state" && index + 1 < argumentCount) context.statePath = arguments[++index];

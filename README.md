@@ -7,6 +7,7 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 ## Recursos
 
 - **Card nativo** sobreposto no canto superior direito, com clique que atravessa (não bloqueia o que está embaixo).
+- **Overlay inerte**: nunca recebe foco e não altera a ordem de janelas enquanto está aberto, preservando o cursor de edição do app em segundo plano.
 - **Cores por estado**: concluído (verde), aprovação (âmbar), erro (vermelho), bloqueado/truncado/interrompido (laranja), pergunta (azul).
 - **Tempo total da tarefa** no card: quanto tempo passou do início do turno até o alerta.
 - **Card compacto**: a altura cresce só quando há texto demais (máximo de 3 linhas e um teto de altura), então ele nunca cobre a tela.
@@ -88,6 +89,7 @@ O `.wav` é reproduzido direto (Win32 `PlaySound`); `.mp3`/`.m4a`/`.wma` usam o 
 - O plugin do Host (`index.js`) escuta os eventos de sessão (`turn/start`, `assistant/message`, `turn/end`, `approval/asked`, `tool/call`) e decide o que merece aviso.
 - Cada aviso vira um estado em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\state.bin` (campos separados por NUL).
 - O helper nativo (`native/overlay.cpp`) lê esse arquivo a cada 150 ms, desenha o card, redimensiona conforme o texto e toca o som.
+- O helper acompanha os processos do DeepSeek Harness e encerra automaticamente quando o aplicativo fecha.
 
 Subagentes só notificam quando algo dá errado; o sucesso de um subagente é silencioso.
 
