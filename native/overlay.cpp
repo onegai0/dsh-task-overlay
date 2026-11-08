@@ -24,13 +24,144 @@ constexpr int kMinHeight = 80;
 constexpr int kMaxHeight = 156;
 constexpr int kMaxDetailLines = 3;
 
+/** Find the top-level DeepSeek Harness window and bring it to foreground. */
+bool activateDeepSeekHarnessWindow() {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return false;
+    }
+
+    std::vector<DWORD> processIds;
+    do {
+        if (_wcsicmp(entry.szExeFile, kDeepSeekHarnessExecutable) == 0) {
+            processIds.push_back(entry.th32ProcessID);
+        }
+    } while (Process32NextW(snapshot, &entry));
+    CloseHandle(snapshot);
+
+    if (processIds.empty()) return false;
+
+    HWND targetWindow = nullptr;
+    DWORD targetProcessId = 0;
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* data = reinterpret_cast<std::pair<std::vector<DWORD>*, std::pair<HWND*, DWORD*>*>*>(lParam);
+        const std::vector<DWORD>* ids = data->first;
+        HWND* outWindow = data->second->first;
+        DWORD* outProcessId = data->second->second;
+        DWORD windowProcessId = 0;
+        GetWindowThreadProcessId(hwnd, &windowProcessId);
+        if (std::find(ids->begin(), ids->end(), windowProcessId) != ids->end()) {
+            // Check if this is a visible top-level window (not owned, not cloaked)
+            if (IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == nullptr) {
+                // Prefer non-minimized windows
+                WINDOWPLACEMENT placement = {};
+                placement.length = sizeof(placement);
+                GetWindowPlacement(hwnd, &placement);
+                if (placement.showCmd != SW_SHOWMINIMIZED) {
+                    *outWindow = hwnd;
+                    *outProcessId = windowProcessId;
+                    return FALSE; // stop enumeration - found ideal window
+                }
+                // Remember minimized window as fallback
+                if (*outWindow == nullptr) {
+                    *outWindow = hwnd;
+                    *outProcessId = windowProcessId;
+                }
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(new std::pair<std::vector<DWORD>*, std::pair<HWND*, DWORD*>*>(&processIds, new std::pair<HWND*, DWORD*>(&targetWindow, &targetProcessId))));
+
+    if (targetWindow != nullptr) {
+        // If window is minimized, restore it first
+        WINDOWPLACEMENT placement = {};
+        placement.length = sizeof(placement);
+        GetWindowPlacement(targetWindow, &placement);
+        if (placement.showCmd == SW_SHOWMINIMIZED) {
+            ShowWindow(targetWindow, SW_RESTORE);
+        }
+
+        // Grant this process permission to set foreground window
+        AllowSetForegroundWindow(ASFW_ANY);
+
+        // Try AttachThreadInput approach for better reliability
+        const DWORD currentThreadId = GetCurrentThreadId();
+        const DWORD targetThreadId = GetWindowThreadProcessId(targetWindow, nullptr);
+        bool success = false;
+
+        if (AttachThreadInput(currentThreadId, targetThreadId, TRUE)) {
+            SetForegroundWindow(targetWindow);
+            SetActiveWindow(targetWindow);
+            BringWindowToTop(targetWindow);
+            AttachThreadInput(currentThreadId, targetThreadId, FALSE);
+            success = (GetForegroundWindow() == targetWindow);
+        }
+
+        // Fallback 1: Try without thread attachment but with AllowSetForegroundWindow
+        if (!success) {
+            SetForegroundWindow(targetWindow);
+            success = (GetForegroundWindow() == targetWindow);
+        }
+
+        // Fallback 2: Try BringWindowToTop + SetActiveWindow + SetForegroundWindow sequence
+        if (!success) {
+            BringWindowToTop(targetWindow);
+            SetActiveWindow(targetWindow);
+            SetForegroundWindow(targetWindow);
+            success = (GetForegroundWindow() == targetWindow);
+        }
+
+        // Fallback 3: Use ShellExecute to activate the app (most reliable for background processes)
+        if (!success && targetProcessId != 0) {
+            // Get the executable path of the target process
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetProcessId);
+            if (process != nullptr) {
+                wchar_t exePath[MAX_PATH * 4] = {};
+                DWORD size = static_cast<DWORD>(std::size(exePath));
+                if (QueryFullProcessImageNameW(process, 0, exePath, &size)) {
+                    CloseHandle(process);
+                    // Use ShellExecute to activate - this bypasses foreground restrictions
+                    HINSTANCE result = ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_RESTORE);
+                    success = (reinterpret_cast<INT_PTR>(result) > 32);
+                } else {
+                    CloseHandle(process);
+                }
+            }
+        }
+
+        return success;
+    }
+
+    // No window found - try to launch/activate via ShellExecute using the first process's executable
+    if (!processIds.empty()) {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processIds[0]);
+        if (process != nullptr) {
+            wchar_t exePath[MAX_PATH * 4] = {};
+            DWORD size = static_cast<DWORD>(std::size(exePath));
+            if (QueryFullProcessImageNameW(process, 0, exePath, &size)) {
+                CloseHandle(process);
+                HINSTANCE result = ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_RESTORE);
+                return reinterpret_cast<INT_PTR>(result) > 32;
+            }
+            CloseHandle(process);
+        }
+    }
+
+    return false;
+}
+
 struct OverlayState {
     std::wstring eventId;
     std::wstring kind;
     std::wstring title;
     std::wstring detail;
     std::wstring sessionTitle;
-    std::wstring sessionId;
+    std::wstring sessionId;  // Available for future `dsh://session/<id>` deep link
     std::wstring createdAt;
     std::wstring elapsed;
 };
@@ -496,10 +627,26 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     }
     case WM_NCHITTEST:
-        // Only effective inside one thread; real click-through comes from
-        // WS_EX_LAYERED | WS_EX_TRANSPARENT set at creation.
-        return HTTRANSPARENT;
+        // Allow the window to receive mouse input (clickable).
+        // HTCLIENT means the client area handles the message, enabling clicks.
+        return HTCLIENT;
+    case WM_LBUTTONUP:
+        // Click on the overlay: activate/focus the DeepSeek Harness window.
+        activateDeepSeekHarnessWindow();
+
+        // TODO(deep-link): When Harness supports `dsh://session/<sessionId>` protocol,
+        // replace the above with:
+        //   if (!context->state.sessionId.empty()) {
+        //       std::wstring url = L"dsh://session/" + context->state.sessionId;
+        //       ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        //   } else {
+        //       activateDeepSeekHarnessWindow();
+        //   }
+        // Requires Harness main process (lib/main.js) to handle `dsh://session/<id>` in
+        // `app.on("open-url")` and navigate to the session in the renderer.
+        return 0;
     case WM_MOUSEACTIVATE:
+        // Prevent the click from activating this window (keep focus on Harness).
         return MA_NOACTIVATE;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -549,12 +696,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     const int width = scale(kCardWidth, 96);
     const int height = scale(kMinHeight, 96);
-    // WS_EX_LAYERED | WS_EX_TRANSPARENT is what makes mouse input pass through to
-    // windows of OTHER processes. HTTRANSPARENT alone only works within one thread,
-    // so without these flags the card sits in front of the app and fights it for the
-    // pointer.
+    // WS_EX_LAYERED enables per-pixel alpha; WS_EX_TRANSPARENT removed so the
+    // overlay receives clicks and can activate the Harness window when clicked.
     HWND window = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kWindowClass,
         L"DeepSeek Harness Task Overlay",
         WS_POPUP,
