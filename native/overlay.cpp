@@ -5,6 +5,7 @@
 #include <tlhelp32.h>
 #include <algorithm>
 #include <cwctype>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ struct AppContext {
     UINT dpi = 96;
     ULONGLONG lastAlertAt = 0;
     ULONGLONG lastLifecycleCheckAt = 0;
+    std::wstring logPath;  // empty = logging off (enable with --log <file>)
 };
 
 std::wstring utf8ToWide(const std::string& text) {
@@ -119,24 +121,6 @@ std::wstring windowTitle(const OverlayState& state) {
     if (state.kind == L"truncated") return L"Resposta truncada";
     if (state.kind == L"interrupted") return L"A tarefa foi interrompida";
     return L"Sua intervenção é necessária";
-}
-
-void positionWindow(AppContext& context) {
-    HWND foreground = GetForegroundWindow();
-    HMONITOR monitor = foreground != nullptr
-        ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
-        : MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFO info = {};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(monitor, &info)) return;
-
-    RECT window = {};
-    GetWindowRect(context.window, &window);
-    const int width = window.right - window.left;
-    const int margin = scale(16, context.dpi);
-    const int x = info.rcWork.right - width - margin;
-    const int y = info.rcWork.top + margin;
-    SetWindowPos(context.window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 bool isDeepSeekHarnessProcess(DWORD processId) {
@@ -328,6 +312,80 @@ void playAlertSound(const std::wstring& folder, const std::wstring& kind) {
     mciSendStringW(L"play dshTaskAlert", nullptr, 0, nullptr);
 }
 
+/** Append one line to the optional debug log (only when started with --log <file>). */
+void logLine(const AppContext& context, const std::wstring& text) {
+    if (context.logPath.empty()) return;
+    const std::wstring line = std::to_wstring(GetTickCount64()) + L" " + text + L"\r\n";
+    const int size = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return;
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()), bytes.data(), size, nullptr, nullptr);
+    HANDLE file = CreateFileW(context.logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+    CloseHandle(file);
+}
+
+/**
+ * Size, place and show the card in ONE SetWindowPos call, without activating it.
+ * Doing size, move and show as separate calls re-evaluated the z-order and the pointer
+ * several times for every notification; one call keeps that to a single, silent update.
+ */
+void showCard(AppContext& context, int height) {
+    HWND foreground = GetForegroundWindow();
+    HMONITOR monitor = foreground != nullptr
+        ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+        : MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+
+    MONITORINFO info = {};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) {
+        info.rcWork = RECT{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    }
+
+    const int width = scale(kCardWidth, context.dpi);
+    const int margin = scale(16, context.dpi);
+    const int x = info.rcWork.right - width - margin;
+    const int y = info.rcWork.top + margin;
+
+    InvalidateRect(context.window, nullptr, FALSE);
+    SetWindowPos(context.window, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+    context.visible = true;
+    logLine(context, L"SHOW card");
+}
+
+void hideCard(AppContext& context) {
+    if (context.visible) {
+        ShowWindow(context.window, SW_HIDE);
+        context.visible = false;
+        logLine(context, L"HIDE card");
+    }
+}
+
+/** Handle a brand-new event read from the state file. */
+void presentEvent(AppContext& context, OverlayState&& next) {
+    context.state = std::move(next);
+    context.currentEventId = context.state.eventId;
+    context.dismissed = false;
+    logLine(context, L"NEW event id=" + context.state.eventId + L" kind=" + context.state.kind);
+
+    // The user is already looking at the app, so there is nothing to announce.
+    // Showing the card here only to hide it a moment later made a topmost window
+    // flash over the app (and beep) on every event.
+    if (isDeepSeekHarnessForeground()) {
+        hideCard(context);
+        context.dismissed = true;
+        return;
+    }
+
+    const int height = fitDetailAndHeight(context);
+    showCard(context, height);
+    context.lastAlertAt = GetTickCount64();
+    playAlertSound(stateFolder(context.statePath), context.state.kind);
+}
+
 LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto* context = reinterpret_cast<AppContext*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     switch (message) {
@@ -341,9 +399,15 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
     case WM_PAINT: {
         PAINTSTRUCT paint = {};
-        HDC dc = BeginPaint(window, &paint);
+        HDC screenDc = BeginPaint(window, &paint);
         RECT client = {};
         GetClientRect(window, &client);
+
+        // Draw everything off-screen and copy it once, so the compositor can never
+        // catch a half-drawn card (background first, text later) and show it flickering.
+        HDC dc = CreateCompatibleDC(screenDc);
+        HBITMAP buffer = CreateCompatibleBitmap(screenDc, client.right, client.bottom);
+        const HGDIOBJ oldBuffer = SelectObject(dc, buffer);
 
         const HBRUSH background = CreateSolidBrush(RGB(21, 21, 23));
         FillRect(dc, &client, background);
@@ -395,9 +459,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         DeleteObject(sessionFont);
         DeleteObject(titleFont);
         DeleteObject(bodyFont);
+
+        BitBlt(screenDc, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, oldBuffer);
+        DeleteObject(buffer);
+        DeleteDC(dc);
         EndPaint(window, &paint);
         return 0;
     }
+    case WM_ERASEBKGND:
+        return 1;
     case WM_TIMER: {
         const ULONGLONG now = GetTickCount64();
         if (now - context->lastLifecycleCheckAt >= kLifecycleCheckIntervalMs) {
@@ -409,25 +480,12 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
 
         OverlayState next;
-        if (readState(context->statePath, next)) {
-            if (next.eventId != context->currentEventId) {
-                context->state = std::move(next);
-                context->currentEventId = context->state.eventId;
-                context->dismissed = false;
-                const int height = fitDetailAndHeight(*context);
-                SetWindowPos(window, HWND_TOPMOST, 0, 0, scale(kCardWidth, context->dpi), height, SWP_NOMOVE | SWP_NOACTIVATE);
-                InvalidateRect(window, nullptr, FALSE);
-                positionWindow(*context);
-                ShowWindow(window, SW_SHOWNOACTIVATE);
-                context->visible = true;
-                context->lastAlertAt = GetTickCount64();
-                playAlertSound(stateFolder(context->statePath), context->state.kind);
-            }
+        if (readState(context->statePath, next) && next.eventId != context->currentEventId) {
+            presentEvent(*context, std::move(next));
         }
 
         if (context->visible && !context->dismissed && isDeepSeekHarnessForeground()) {
-            ShowWindow(window, SW_HIDE);
-            context->visible = false;
+            hideCard(*context);
             context->dismissed = true;
         }
 
@@ -438,6 +496,8 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     }
     case WM_NCHITTEST:
+        // Only effective inside one thread; real click-through comes from
+        // WS_EX_LAYERED | WS_EX_TRANSPARENT set at creation.
         return HTTRANSPARENT;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
@@ -462,6 +522,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     for (int index = 1; index < argumentCount; ++index) {
         const std::wstring option = arguments[index];
         if (option == L"--state" && index + 1 < argumentCount) context.statePath = arguments[++index];
+        else if (option == L"--log" && index + 1 < argumentCount) context.logPath = arguments[++index];
     }
     LocalFree(arguments);
     if (context.statePath.empty()) return 1;
@@ -488,8 +549,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     const int width = scale(kCardWidth, 96);
     const int height = scale(kMinHeight, 96);
+    // WS_EX_LAYERED | WS_EX_TRANSPARENT is what makes mouse input pass through to
+    // windows of OTHER processes. HTTRANSPARENT alone only works within one thread,
+    // so without these flags the card sits in front of the app and fights it for the
+    // pointer.
     HWND window = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
         kWindowClass,
         L"DeepSeek Harness Task Overlay",
         WS_POPUP,
@@ -505,6 +570,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         CloseHandle(mutex);
         return 1;
     }
+    // A layered window is not drawn until its attributes are set; fully opaque.
+    SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA);
 
     SetTimer(window, kPollTimer, kPollIntervalMs, nullptr);
     MSG message = {};
