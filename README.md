@@ -6,8 +6,8 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 
 ## Recursos
 
-- **Card nativo** sobreposto no canto superior direito, com clique que atravessa (não bloqueia o que está embaixo).
-- **Overlay inerte**: nunca recebe foco e não altera a ordem de janelas enquanto está aberto, preservando o cursor de edição do app em segundo plano.
+- **Card nativo** sobreposto no canto superior direito: ao clicar, traz o DeepSeek Harness para frente.
+- **Sem roubar foco ao aparecer**: o card é exibido sem ativar sua janela; o Harness é ativado quando você clica no card.
 - **Cores por estado**: concluído (verde), aprovação (âmbar), erro (vermelho), bloqueado/truncado/interrompido (laranja), pergunta (azul).
 - **Tempo total da tarefa** no card: quanto tempo passou do início do turno até o alerta.
 - **Card compacto**: a altura cresce só quando há texto demais (máximo de 3 linhas e um teto de altura), então ele nunca cobre a tela.
@@ -26,19 +26,19 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 ### Linha de comando
 
 ```bash
-dsh plugin --profile <seu-perfil> add github:onegai0/dsh-task-overlay#v1.0.0
+dsh plugin --profile desktop add github:onegai0/dsh-task-overlay#455b0a8fcda5ee8e4968c9f49872e639cf48bf35
 ```
 
-Troque `<seu-perfil>` pelo nome do perfil (`desktop`, `web`, `tui`, ...). O perfil é o que guarda os plugins instalados.
+Para o aplicativo DeepSeek Harness no Windows, use o perfil `desktop`, como no comando acima. O perfil é o que guarda os plugins instalados.
 
-O `#v1.0.0` fixa a versão: é o recomendado, porque a instalação fica reprodutível. Sem a tag, o Harness instala a `main` mais recente.
+O commit `455b0a8fcda5ee8e4968c9f49872e639cf48bf35` fixa a revisão com suporte a clique no card. A tag antiga `v1.0.0` não contém esse suporte. Mantenha o commit no comando para instalar essa mesma revisão, sem acompanhar futuras mudanças da `main`.
 
 ### Plugin Manager (interface)
 
 Abra **Configurações → Plugins** no Harness, use a ação de instalar bundle e informe a mesma especificação:
 
 ```
-github:onegai0/dsh-task-overlay#v1.0.0
+github:onegai0/dsh-task-overlay#455b0a8fcda5ee8e4968c9f49872e639cf48bf35
 ```
 
 ### Desenvolvimento local (link)
