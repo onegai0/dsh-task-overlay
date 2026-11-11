@@ -14,6 +14,7 @@ Sem Electron, sem janela de navegador: é um executável Win32 pequeno, sempre n
 - **Alerta sonoro**: toca quando o card aparece e **repete a cada 30 segundos** enquanto o card estiver na tela. Para quando você entra no app.
 - **Som por estado**: cada notificação usa o áudio da sua pasta; estados sem áudio usam o som padrão de tarefa concluída (veja abaixo).
 - **Falha de subagente** aparece no card, atribuída à sessão pai.
+- **Lembrete próprio**: a IA pode chamar `overlay_reminder_create` para mostrar um card depois de um prazo, sem usar os serviços de agenda ou notificações do Harness.
 
 ## Requisitos
 
@@ -74,6 +75,7 @@ O plugin cria uma pasta para cada estado em `%LOCALAPPDATA%\DeepSeekHarness\dsh-
 | `interrupted\` | A tarefa foi interrompida |
 | `approval\` | Aprovação necessária |
 | `question\` | Sua intervenção é necessária |
+| `schedule\` | Lembrete próprio (toque exclusivo) |
 
 1. Copie um arquivo `.wav`, `.mp3`, `.m4a` ou `.wma` para a pasta do estado desejado.
 2. Pronto — o próximo alerta toca esse arquivo.
@@ -81,6 +83,8 @@ O plugin cria uma pasta para cada estado em `%LOCALAPPDATA%\DeepSeekHarness\dsh-
 O helper procura o arquivo a cada alerta, então não precisa reiniciar nada; se houver mais de um arquivo de áudio na mesma pasta, use apenas um.
 
 Quando a pasta do estado não tem áudio, o helper usa automaticamente o som de `completed`. Se também não houver som nessa pasta, ele procura um áudio legado diretamente em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\` e, por último, usa o bipe padrão do Windows.
+
+Lembretes são a exceção: sem áudio em `sounds\schedule\`, usam um toque próprio de dois tons, sem recorrer ao som de tarefa concluída.
 
 O `.wav` é reproduzido direto (Win32 `PlaySound`); `.mp3`/`.m4a`/`.wma` usam o MCI do Windows e dependem dos codecs instalados no sistema.
 
@@ -92,6 +96,22 @@ O `.wav` é reproduzido direto (Win32 `PlaySound`); `.mp3`/`.m4a`/`.wma` usam o 
 - O helper acompanha os processos do DeepSeek Harness e encerra automaticamente quando o aplicativo fecha.
 
 Subagentes só notificam quando algo dá errado; o sucesso de um subagente é silencioso.
+
+## Lembretes próprios
+
+Com esta revisão de desenvolvimento carregada, peça à IA no Harness: **"Daqui a 5 horas, me lembre de fazer uma pausa usando o overlay."** A ferramenta `overlay_reminder_create` recebe:
+
+```json
+{ "message": "Fazer uma pausa", "delay_seconds": 18000 }
+```
+
+O plugin responde com o identificador e o instante `dueAt`. Seu próprio temporizador publica o estado `schedule` ao vencer, sem acordar a IA e sem usar a agenda ou as notificações do Harness. O executável nativo mantém o mesmo comportamento de clique.
+
+Nesta primeira versão, os lembretes ficam em memória: mantenha o Harness aberto e não recarregue o plugin até o disparo. O prazo máximo é de 2.147.483 segundos. Se o computador estiver suspenso no vencimento, o temporizador só pode executar após a retomada. Como nos outros tipos de overlay, card e som são suprimidos se o Harness já estiver em primeiro plano.
+
+Coloque o áudio exclusivo em `%LOCALAPPDATA%\DeepSeekHarness\dsh-task-overlay\sounds\schedule\` para substituir o toque padrão.
+
+Os comandos de instalação acima continuam fixados na revisão anterior; não incluem esta funcionalidade de desenvolvimento.
 
 ## Desenvolvimento
 

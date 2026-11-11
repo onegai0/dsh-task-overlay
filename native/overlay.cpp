@@ -20,6 +20,7 @@ constexpr ULONGLONG kAlertIntervalMs = 30000;
 constexpr ULONGLONG kLifecycleCheckIntervalMs = 1000;
 constexpr int kCardWidth = 380;
 constexpr int kPaddingX = 22;
+constexpr int kDetailTop = 68;
 constexpr int kMinHeight = 80;
 constexpr int kMaxHeight = 156;
 constexpr int kMaxDetailLines = 3;
@@ -236,6 +237,7 @@ int scale(int value, UINT dpi) {
 }
 
 COLORREF accentColor(const std::wstring& kind) {
+    if (kind == L"schedule") return RGB(244, 114, 182);
     if (kind == L"completed") return RGB(34, 197, 94);
     if (kind == L"approval") return RGB(245, 158, 11);
     if (kind == L"error") return RGB(239, 68, 68);
@@ -244,6 +246,7 @@ COLORREF accentColor(const std::wstring& kind) {
 }
 
 std::wstring windowTitle(const OverlayState& state) {
+    if (state.kind == L"schedule") return L"Darliing";
     if (!state.title.empty()) return state.title;
     if (state.kind == L"completed") return L"Tarefa concluída";
     if (state.kind == L"approval") return L"Aprovação necessária";
@@ -356,7 +359,7 @@ int fitDetailAndHeight(AppContext& context) {
     DeleteObject(font);
     DeleteDC(dc);
 
-    int height = scale(64, dpi) + lines * lineHeight + scale(12, dpi);
+    int height = scale(kDetailTop, dpi) + lines * lineHeight + scale(12, dpi);
     if (!context.state.elapsed.empty()) height += scale(22, dpi);
     return std::min(std::max(height, scale(kMinHeight, dpi)), scale(kMaxHeight, dpi));
 }
@@ -400,7 +403,7 @@ std::wstring findCustomSound(const std::wstring& folder) {
 std::wstring knownSoundKind(const std::wstring& kind) {
     if (kind == L"completed" || kind == L"error" || kind == L"blocked" ||
         kind == L"truncated" || kind == L"interrupted" || kind == L"approval" ||
-        kind == L"question") {
+        kind == L"question" || kind == L"schedule") {
         return kind;
     }
     return L"completed";
@@ -411,6 +414,7 @@ std::wstring findSoundForKind(const std::wstring& folder, const std::wstring& ki
     const std::wstring soundRoot = folder + L"\\sounds";
     const std::wstring effectiveKind = knownSoundKind(kind);
     std::wstring sound = findCustomSound(soundRoot + L"\\" + effectiveKind);
+    if (sound.empty() && effectiveKind == L"schedule") return {};
     if (sound.empty() && effectiveKind != L"completed") {
         sound = findCustomSound(soundRoot + L"\\completed");
     }
@@ -424,6 +428,11 @@ std::wstring findSoundForKind(const std::wstring& folder, const std::wstring& ki
 void playAlertSound(const std::wstring& folder, const std::wstring& kind) {
     const std::wstring sound = findSoundForKind(folder, kind);
     if (sound.empty()) {
+        if (kind == L"schedule") {
+            Beep(880, 120);
+            Beep(1320, 180);
+            return;
+        }
         MessageBeep(MB_ICONASTERISK);
         return;
     }
@@ -544,11 +553,6 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         FillRect(dc, &client, background);
         DeleteObject(background);
 
-        const HBRUSH accent = CreateSolidBrush(accentColor(context->state.kind));
-        RECT stripe = { 0, 0, scale(4, context->dpi), client.bottom };
-        FillRect(dc, &stripe, accent);
-        DeleteObject(accent);
-
         const HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
         const HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         const HPEN border = CreatePen(PS_SOLID, 1, RGB(55, 55, 60));
@@ -557,6 +561,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         DeleteObject(border);
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
+
+        const HBRUSH accent = CreateSolidBrush(accentColor(context->state.kind));
+        RECT stripe = { 0, 0, scale(4, context->dpi), client.bottom };
+        FillRect(dc, &stripe, accent);
+        DeleteObject(accent);
 
         HFONT sessionFont = CreateFontW(
             -scale(12, context->dpi), 0, 0, 0, FW_SEMIBOLD,
@@ -579,7 +588,7 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         const int elapsedHeight = context->state.elapsed.empty() ? 0 : scale(22, context->dpi);
         const int detailBottom = client.bottom - elapsedHeight - (elapsedHeight > 0 ? scale(4, context->dpi) : scale(12, context->dpi));
-        RECT detail = { scale(kPaddingX, context->dpi), scale(68, context->dpi), client.right - scale(kPaddingX, context->dpi), detailBottom };
+        RECT detail = { scale(kPaddingX, context->dpi), scale(kDetailTop, context->dpi), client.right - scale(kPaddingX, context->dpi), detailBottom };
         drawText(dc, context->state.detail, detail, DT_WORDBREAK, RGB(212, 212, 216), bodyFont);
 
         if (!context->state.elapsed.empty()) {

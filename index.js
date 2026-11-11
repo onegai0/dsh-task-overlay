@@ -17,9 +17,11 @@ const OVERLAY_KINDS = Object.freeze([
   "interrupted",
   "approval",
   "question",
+  "schedule",
 ]);
 const MAX_DETAIL_LENGTH = 800;
 const POLL_INTERVAL_MS = 150;
+const MAX_REMINDER_DELAY_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 /** Loader identity for the task overlay. */
 export const name = "task-overlay";
@@ -295,6 +297,72 @@ function createOverlayEventHandler(ctx, publish, now = () => Date.now()) {
   };
 }
 
+/** Own reminder timers, independently of the Harness schedule and notification services. */
+function createReminderScheduler(publish, now = () => Date.now()) {
+  const timers = new Set();
+  return {
+    create({ message, delay_seconds }, session) {
+      if (typeof message !== "string" || message.trim() === "") {
+        throw new TypeError("O lembrete precisa de uma mensagem.");
+      }
+      if (!Number.isSafeInteger(delay_seconds) || delay_seconds < 1 || delay_seconds > MAX_REMINDER_DELAY_SECONDS) {
+        throw new RangeError(`O prazo deve ser um inteiro entre 1 e ${MAX_REMINDER_DELAY_SECONDS} segundos.`);
+      }
+      const id = randomUUID();
+      const dueAt = new Date(now() + delay_seconds * 1000).toISOString();
+      const detail = compactDetail(message);
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        publish({
+          kind: "schedule",
+          title: "Darliing",
+          detail,
+          sessionId: session.id,
+          sessionTitle: session.title,
+        });
+      }, delay_seconds * 1000);
+      timers.add(timer);
+      return { id, message: detail, dueAt };
+    },
+    dispose() {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    },
+  };
+}
+
+/** Registry-ready tool using the Host's existing JSON Schema tool contract. */
+function createReminderTool(ctx, reminders) {
+  return {
+    name: "overlay_reminder_create",
+    description: "Cria um lembrete local com card e som próprios após o prazo informado. Use para pedidos como 'me lembre daqui a 5 horas' (delay_seconds: 18000). Não usa a agenda do Harness e não envia uma mensagem à IA no vencimento. O Harness deve permanecer aberto e o plugin não pode ser recarregado até a entrega.",
+    parameters: {
+      type: "object",
+      properties: {
+        message: { type: "string", minLength: 1, description: "Texto que aparecerá no lembrete." },
+        delay_seconds: { type: "integer", minimum: 1, maximum: MAX_REMINDER_DELAY_SECONDS, description: "Tempo a partir de agora, em segundos." },
+      },
+      required: ["message", "delay_seconds"],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: "object",
+        properties: { id: { type: "string" }, message: { type: "string" }, dueAt: { type: "string" } },
+        required: ["id", "message", "dueAt"],
+        additionalProperties: false,
+      },
+      render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
+    },
+    execute(args, exec) {
+      exec.signal?.throwIfAborted();
+      const session = exec.agent?.session;
+      if (session === undefined) throw new Error("O lembrete precisa ser criado em uma conversa do Harness.");
+      return reminders.create(args, { id: session.id, title: ctx.get("sessionTitle")?.get(session)?.title });
+    },
+  };
+}
+
 /**
  * Register the overlay listener and start its detached native helper.
  * @param {object} ctx - Cordis Host context.
@@ -306,7 +374,7 @@ export function apply(ctx) {
   } catch (error) {
     ctx.logger.warn(`task-overlay: could not create sound directories: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const handler = createOverlayEventHandler(ctx, (payload) => {
+  const publish = (payload) => {
     const eventId = randomUUID();
     try {
       writeState({ ...payload, eventId, createdAt: Date.now() });
@@ -316,8 +384,14 @@ export function apply(ctx) {
     } catch (error) {
       ctx.logger.warn(`task-overlay: could not show overlay: ${error instanceof Error ? error.message : String(error)}`);
     }
-  });
+  };
+  const handler = createOverlayEventHandler(ctx, publish);
   ctx.effect(() => ctx.on("session/event", handler));
+  ctx.inject(["tools"], (toolCtx) => {
+    const reminders = createReminderScheduler(publish);
+    toolCtx.effect(() => () => reminders.dispose());
+    toolCtx.tools.register(createReminderTool(toolCtx, reminders));
+  });
 }
 
 export {
@@ -329,6 +403,8 @@ export {
   assistantText,
   compactDetail,
   createOverlayEventHandler,
+  createReminderScheduler,
+  createReminderTool,
   createSoundDirectories,
   encodeState,
   formatElapsed,

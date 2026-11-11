@@ -8,6 +8,8 @@ import {
   assistantText,
   compactDetail,
   createOverlayEventHandler,
+  createReminderScheduler,
+  createReminderTool,
   createSoundDirectories,
   encodeState,
   formatElapsed,
@@ -257,6 +259,7 @@ test("creates one sound directory for every overlay kind", () => {
       "interrupted",
       "approval",
       "question",
+      "schedule",
     ]);
     assert.equal(soundRoot, join(root, "sounds"));
     for (const kind of OVERLAY_KINDS) {
@@ -284,4 +287,58 @@ test("encodes state as stable NUL-delimited UTF-8 fields", () => {
   assert.equal(fields[1], "event-1");
   assert.equal(fields[3], "Tarefa concluída");
   assert.equal(fields[7], "123");
+});
+
+test("delivers an independent reminder after five hours, exactly once", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const events = [];
+  const reminders = createReminderScheduler((event) => events.push(event), () => 0);
+  const result = reminders.create({ message: " Fazer uma pausa ", delay_seconds: 18000 }, { id: "session-1", title: "Trabalho" });
+  assert.equal(result.dueAt, "1970-01-01T05:00:00.000Z");
+  assert.equal(result.message, "Fazer uma pausa");
+  t.mock.timers.tick(17_999_999);
+  assert.deepEqual(events, []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(events, [{ kind: "schedule", title: "Darliing", detail: "Fazer uma pausa", sessionId: "session-1", sessionTitle: "Trabalho" }]);
+  t.mock.timers.tick(18_000_000);
+  assert.equal(events.length, 1);
+});
+
+test("rejects invalid reminder messages and timer delays", () => {
+  const reminders = createReminderScheduler(() => {});
+  for (const delay_seconds of [0, -1, 0.5, NaN, Infinity, 2147484, "18000"]) {
+    assert.throws(() => reminders.create({ message: "Pausa", delay_seconds }, { id: "session-1" }), RangeError);
+  }
+  for (const message of ["", "  ", undefined]) {
+    assert.throws(() => reminders.create({ message, delay_seconds: 1 }, { id: "session-1" }), TypeError);
+  }
+});
+
+test("disposes pending reminder timers when the plugin unloads", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const events = [];
+  const reminders = createReminderScheduler((event) => events.push(event));
+  reminders.create({ message: "Pausa", delay_seconds: 5 }, { id: "session-1" });
+  reminders.dispose();
+  t.mock.timers.tick(5000);
+  assert.deepEqual(events, []);
+});
+
+test("the AI tool creates a reminder for its calling conversation and respects cancellation", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { ctx, session } = createContext();
+  const events = [];
+  const reminders = createReminderScheduler((event) => events.push(event), () => 0);
+  const tool = createReminderTool(ctx, reminders);
+  const args = { message: "Pausa", delay_seconds: 1 };
+  assert.throws(() => tool.execute(args, {}), /conversa/);
+  const controller = new AbortController();
+  controller.abort();
+  assert.throws(() => tool.execute(args, { agent: { session }, signal: controller.signal }), { name: "AbortError" });
+  const result = tool.execute(args, { agent: { session } });
+  assert.deepEqual(JSON.parse(tool.output.render(args, result)[0].text), result);
+  t.mock.timers.tick(1000);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sessionId, session.id);
+  assert.equal(events[0].sessionTitle, "Build the plugin");
 });
